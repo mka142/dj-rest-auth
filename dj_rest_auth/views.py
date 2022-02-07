@@ -13,6 +13,13 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+if 'allauth' in settings.INSTALLED_APPS:
+    from allauth.account import signals as allauth_signals
+    from allauth.account.utils import url_str_to_user_pk as uid_decoder
+    from django.utils.encoding import force_str
+    
+
+
 from .app_settings import (
     JWTSerializer, JWTSerializerWithExpiration, LoginSerializer,
     PasswordChangeSerializer, PasswordResetConfirmSerializer,
@@ -30,7 +37,28 @@ sensitive_post_parameters_m = method_decorator(
 )
 
 
-class LoginView(GenericAPIView):
+class allauth_helper:
+    def __init__(self, *args, **kwargs):
+        if 'allauth' in settings.INSTALLED_APPS:
+            self.allauth = True
+            self.UserModel = get_user_model()
+
+        super().__init__(*args, **kwargs)
+        
+    def uid_to_user(self,request_uid):
+        # Decode the uidb64 (allauth use base36) to uid to get User object
+        user = None
+        try:
+            uid = force_str(uid_decoder(request_uid))
+            
+            user = self.UserModel._default_manager.get(pk=uid)
+            
+        except (TypeError, ValueError, OverflowError, self.UserModel.DoesNotExist):
+            pass
+        return user
+
+
+class LoginView(allauth_helper,GenericAPIView):
     """
     Check the credentials and return the REST Token
     if the credentials are valid and authenticated.
@@ -116,6 +144,16 @@ class LoginView(GenericAPIView):
         if getattr(settings, 'REST_USE_JWT', False):
             from .jwt_auth import set_jwt_cookies
             set_jwt_cookies(response, self.access_token, self.refresh_token)
+            
+        #send signal
+        if self.allauth:
+            allauth_signals.user_logged_in.send(
+                sender=self.user.__class__,
+                request=self.request,
+                response=response,
+                user=self.user,
+        )
+        
         return response
 
     def post(self, request, *args, **kwargs):
@@ -181,7 +219,7 @@ class LogoutView(APIView):
                     token.blacklist()
                 except KeyError:
                     response.data = {'detail': _('Refresh token was not included in request data.')}
-                    response.status_code =status.HTTP_401_UNAUTHORIZED
+                    response.status_code = status.HTTP_401_UNAUTHORIZED
                 except (TokenError, AttributeError, TypeError) as error:
                     if hasattr(error, 'args'):
                         if 'Token is blacklisted' in error.args or 'Token is invalid or expired' in error.args:
@@ -247,6 +285,7 @@ class PasswordResetView(GenericAPIView):
         serializer.is_valid(raise_exception=True)
 
         serializer.save()
+
         # Return the success message with OK HTTP status
         return Response(
             {'detail': _('Password reset e-mail has been sent.')},
@@ -254,7 +293,7 @@ class PasswordResetView(GenericAPIView):
         )
 
 
-class PasswordResetConfirmView(GenericAPIView):
+class PasswordResetConfirmView(allauth_helper,GenericAPIView):
     """
     Password reset e-mail link is confirmed, therefore
     this resets the user's password.
@@ -275,12 +314,24 @@ class PasswordResetConfirmView(GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        
+        #send signal
+        if self.allauth:
+            reset_user = self.uid_to_user(request.data['uid'])
+            print(reset_user,"RESET USER")
+            
+            allauth_signals.password_reset.send(
+                sender=reset_user.__class__,
+                request=request,
+                user=reset_user,
+            )
+        
         return Response(
             {'detail': _('Password has been reset with the new password.')},
         )
 
 
-class PasswordChangeView(GenericAPIView):
+class PasswordChangeView(allauth_helper,GenericAPIView):
     """
     Calls Django Auth SetPasswordForm save method.
 
@@ -299,4 +350,13 @@ class PasswordChangeView(GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        
+        #send signal
+        if self.allauth:
+            allauth_signals.password_changed.send(
+            sender=request.user.__class__,
+            request=request,
+            user=request.user,
+        )
+        
         return Response({'detail': _('New password has been saved.')})
