@@ -19,6 +19,8 @@ except ImportError:
     raise ImportError('allauth needs to be added to INSTALLED_APPS.')
 
 
+import json
+
 class SocialAccountSerializer(serializers.ModelSerializer):
     """
     serialize allauth SocialAccounts for use with a REST API
@@ -33,6 +35,14 @@ class SocialAccountSerializer(serializers.ModelSerializer):
             'last_login',
             'date_joined',
         )
+        
+    def to_representation(self,instance):
+        data = super().to_representation(instance)
+        try:
+            data['extra_data'] = instance.extra_data
+        except:
+            pass
+        return data
 
 
 class SocialLoginSerializer(serializers.Serializer):
